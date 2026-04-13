@@ -49,7 +49,7 @@ int main(int argc, char** argv) {
     printf("CppSim: Loaded %zu words\n", firmware.size());
 
     // Instantiate SoC on heap (large memory arrays exceed stack size)
-    auto soc_ptr = std::make_unique<Sparkle_Examples_RV32_SoCVerilog_rv32iSoCSynth>();
+    auto soc_ptr = std::make_unique<Sparkle_IP_RV32_SoCVerilog_rv32iSoCSynth>();
     auto& soc = *soc_ptr;
 
     // Load firmware directly into IMEM array (no CPU cycles consumed)
@@ -92,18 +92,17 @@ int main(int argc, char** argv) {
             uart_log.push_back(uart_data);
             printf("  UART[%zu]: 0x%08x\n", uart_log.size(), uart_data);
 
-            // Stop after pass/fail marker
+            // Stop after pass/fail marker. Run a few more cycles
+            // to capture the return value word that follows.
             if (uart_data == 0xCAFE0000u || uart_data == 0xDEADDEADu) {
-                // Drain pipeline
-                for (int drain = 0; drain < 20; drain++) {
-                    soc.eval();
+                for (int drain = 0; drain < 10; drain++) {
                     soc.tick();
-                    if (soc._gen_uartValidBV) {
+                    soc.eval();
+                    if (soc._gen_uartValidBV && soc._gen_prevStoreData != uart_data) {
                         uart_log.push_back(soc._gen_prevStoreData);
                         printf("  UART[%zu]: 0x%08x\n", uart_log.size(), soc._gen_prevStoreData);
                     }
                 }
-                printf("Simulation complete at cycle %llu\n", (unsigned long long)cycle);
                 break;
             }
         }

@@ -27,17 +27,23 @@ extern_lib «sparkle_jit» pkg := do
 
 lean_lib «Sparkle» where
 
-lean_lib «Examples.BitNet» where
-  roots := #[`Examples.BitNet]
+lean_lib «IP.BitNet» where
+  roots := #[`IP.BitNet]
 
-lean_lib «Examples.RV32» where
-  roots := #[`Examples.RV32]
+lean_lib «IP.Drone» where
+  roots := #[`IP.Drone]
 
-lean_lib «Examples.YOLOv8» where
-  roots := #[`Examples.YOLOv8]
+lean_lib «IP.Humanoid» where
+  roots := #[`IP.Humanoid]
 
-lean_lib «Examples.Arbiter» where
-  roots := #[`Examples.Arbiter]
+lean_lib «IP.RV32» where
+  roots := #[`IP.RV32]
+
+lean_lib «IP.YOLOv8» where
+  roots := #[`IP.YOLOv8]
+
+lean_lib «IP.Arbiter» where
+  roots := #[`IP.Arbiter]
 
 lean_lib «Examples.CDC» where
   roots := #[`Examples.CDC]
@@ -139,6 +145,30 @@ lean_exe «cdc-multi-clock-test» where
   root := `Tests.CDC.MultiClockTest
   supportInterpreter := true
 
+lean_exe «sim-runner-test» where
+  root := `Tests.Sim.SimRunnerTest
+  supportInterpreter := true
+
+lean_exe «bitnet-soc-test» where
+  root := `Tests.Integration.BitNetSoCTest
+  supportInterpreter := true
+
+lean_exe «timemux-sim-test» where
+  root := `Tests.Synthesis.TimeMuxSim
+  supportInterpreter := true
+
+lean_exe «golden-compare-test» where
+  root := `Tests.Synthesis.GoldenCompare
+  supportInterpreter := true
+
+lean_exe «ffn-golden-test» where
+  root := `Tests.Synthesis.FFNGolden
+  supportInterpreter := true
+
+lean_exe «toplevel-sim-test» where
+  root := `Tests.Synthesis.TopLevelSim
+  supportInterpreter := true
+
 lean_exe «svparser-test» where
   root := `Tests.SVParser.ParserTest
   supportInterpreter := true
@@ -157,6 +187,18 @@ lean_exe «circuit-sim-test» where
 
 lean_exe «mext-rv32i-test» where
   root := `Tests.SVParser.MExtRv32iTest
+  supportInterpreter := true
+
+lean_exe «mul-oracle-test» where
+  root := `Tests.RV32.MulOracleTest
+  supportInterpreter := true
+
+lean_exe «litex-test» where
+  root := `Tests.SVParser.LiteXTest
+  supportInterpreter := true
+
+lean_exe «drone-closed-loop-test» where
+  root := `Tests.Integration.DroneClosedLoopSim
   supportInterpreter := true
 
 @[test_driver]

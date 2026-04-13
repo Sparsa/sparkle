@@ -10,26 +10,26 @@
   - FFN block composition (Signal DSL)
 -/
 
-import Examples.BitNet.Config
-import Examples.BitNet.Types
+import IP.BitNet.Config
+import IP.BitNet.Types
 import Sparkle.Core.Signal
 import Sparkle.Core.Domain
-import Examples.BitNet.SignalHelpers
-import Examples.BitNet.BitLinear.Scale
-import Examples.BitNet.Layers.ReLUSq
-import Examples.BitNet.Layers.ResidualAdd
-import Examples.BitNet.Layers.ElemMul
-import Examples.BitNet.Layers.RMSNorm
-import Examples.BitNet.Layers.FFN
+import IP.BitNet.SignalHelpers
+import IP.BitNet.BitLinear.Scale
+import IP.BitNet.Layers.ReLUSq
+import IP.BitNet.Layers.ResidualAdd
+import IP.BitNet.Layers.ElemMul
+import IP.BitNet.Layers.RMSNorm
+import IP.BitNet.Layers.FFN
 
-namespace Sparkle.Examples.BitNet.Tests.Layers
+namespace Sparkle.IP.BitNet.Tests.Layers
 
-open Sparkle.Examples.BitNet
+open Sparkle.IP.BitNet
 open Sparkle.Core.Signal
 open Sparkle.Core.Domain
-open Sparkle.Examples.BitNet.SignalHelpers
-open Sparkle.Examples.BitNet.BitLinear
-open Sparkle.Examples.BitNet.Layers
+open Sparkle.IP.BitNet.SignalHelpers
+open Sparkle.IP.BitNet.BitLinear
+open Sparkle.IP.BitNet.Layers
 
 /-- Simple test harness -/
 def check (name : String) (cond : Bool) : IO Unit := do
@@ -276,7 +276,8 @@ def testRMSNormSignal : IO Unit := do
     #[Signal.pure (BitVec.ofNat 32 0x10000), Signal.pure (BitVec.ofNat 32 0x10000)]
   let scales : Array (Signal defaultDomain (BitVec 32)) :=
     #[Signal.pure (BitVec.ofNat 32 0x01000000), Signal.pure (BitVec.ofNat 32 0x01000000)]
-  let outputs := rmsNormSignal xs scales
+  -- recipN = 2^24 / 2 = 0x800000 (dim=2)
+  let outputs := rmsNormSignal xs scales 0x800000#32
   check "rmsnorm: produces 2 outputs" (outputs.size == 2)
   -- Both outputs should be equal (symmetric inputs)
   check "rmsnorm: symmetric inputs → equal outputs"
@@ -294,8 +295,9 @@ def testFFNBlockSignal : IO Unit := do
   let activations : Array (Signal defaultDomain (BitVec 32)) :=
     Array.replicate 4 (Signal.pure (BitVec.ofNat 32 0x10000))
 
+  let residInput := Signal.pure (BitVec.ofNat 32 0x10000)
   let result := ffnBlockSignal gateWeights upWeights downWeights
-    0x01000000 0x01000000 0x01000000 activations
+    0x01000000 0x01000000 0x01000000 residInput activations
 
   -- FFN should produce a non-zero output
   let output := result.atTime 0
@@ -304,8 +306,9 @@ def testFFNBlockSignal : IO Unit := do
   -- Test with zero input
   let zeroActs : Array (Signal defaultDomain (BitVec 32)) :=
     Array.replicate 4 (Signal.pure (BitVec.ofNat 32 0))
+  let zeroResid := Signal.pure (BitVec.ofNat 32 0)
   let zeroResult := ffnBlockSignal gateWeights upWeights downWeights
-    0x01000000 0x01000000 0x01000000 zeroActs
+    0x01000000 0x01000000 0x01000000 zeroResid zeroActs
   check "ffn: zero input → zero output" (zeroResult.atTime 0 == BitVec.ofNat 32 0)
 
 def runAll : IO Unit := do
@@ -325,4 +328,4 @@ def runAll : IO Unit := do
   IO.println ""
   IO.println "=== All FFN layer tests complete ==="
 
-end Sparkle.Examples.BitNet.Tests.Layers
+end Sparkle.IP.BitNet.Tests.Layers

@@ -585,6 +585,41 @@ mutual
                    let resWire ← CompilerM.makeWire hint (.bitVector len) (named := isNamed)
                    CompilerM.emitAssign resWire (.slice (.ref wireS) (start + len - 1) start)
                    return resWire
+               -- BitVec.signExtend → sign extension via concat of replicated MSB
+               if opName == ``BitVec.signExtend then
+                 let bodyArgs := body.getAppArgs
+                 -- signExtend w val : args are [w, val] (w is target width)
+                 if bodyArgs.size >= 2 then
+                   let targetWidth ← extractNat bodyArgs[bodyArgs.size - 2]!
+                   let wireS ← translateExprToWire s "s" (isTopLevel := false)
+                   let srcWidth ← CompilerM.getWireWidth wireS
+                   let extBits := targetWidth - srcWidth
+                   let resWire ← CompilerM.makeWire hint (.bitVector targetWidth) (named := isNamed)
+                   if extBits == 0 then
+                     CompilerM.emitAssign resWire (.ref wireS)
+                   else
+                     -- MSB = signal[srcWidth-1 : srcWidth-1]
+                     let msbWire ← CompilerM.makeWire "sext_msb" (.bitVector 1)
+                     CompilerM.emitAssign msbWire (.slice (.ref wireS) (srcWidth - 1) (srcWidth - 1))
+                     -- Replicate MSB extBits times via concat
+                     let msbRefs := List.replicate extBits (.ref msbWire)
+                     let extWire ← CompilerM.makeWire "sext_ext" (.bitVector extBits)
+                     CompilerM.emitAssign extWire (.concat msbRefs)
+                     -- Concat: {ext, original}
+                     CompilerM.emitAssign resWire (.concat [.ref extWire, .ref wireS])
+                   return resWire
+               -- BitVec.sshiftRight → arithmetic shift right by constant
+               if opName == ``BitVec.sshiftRight then
+                 let bodyArgs := body.getAppArgs
+                 if bodyArgs.size >= 2 then
+                   let shiftAmt ← extractNat bodyArgs[bodyArgs.size - 1]!
+                   let wireS ← translateExprToWire s "s" (isTopLevel := false)
+                   let srcWidth ← CompilerM.getWireWidth wireS
+                   let resWire ← CompilerM.makeWire hint (.bitVector srcWidth) (named := isNamed)
+                   let shiftWire ← CompilerM.makeWire "ashr_amt" (.bitVector srcWidth)
+                   CompilerM.emitAssign shiftWire (.const shiftAmt srcWidth)
+                   CompilerM.emitAssign resWire (.op .asr [.ref wireS, .ref shiftWire])
+                   return resWire
                -- Unary primitives (neg, not, etc.)
                if let some op := getOperator opName then
                  let wireS ← translateExprToWire s "s" (isTopLevel := false)
@@ -1310,11 +1345,12 @@ mutual
         let exprType ← CompilerM.liftMetaM (Lean.Meta.inferType e)
         let hwType ← inferHWTypeFromSignal exprType
         let loopWire ← CompilerM.makeWire "loop" hwType
-        let (fvarId, bodyInst) ← CompilerM.liftMetaM do
-          withLocalDeclD binderName binderType fun fvar => do
-            return (fvar.fvarId!, body.instantiate1 fvar)
-        let resultWire ← CompilerM.withVarMapping fvarId loopWire do
-          translateExprToWire bodyInst "loop_body"
+        -- Use CompilerM.withLocalDecl to keep the fvar in scope for both
+        -- MetaM (type checking) and CompilerM (wire mapping).
+        let resultWire ← CompilerM.withLocalDecl binderName binderType fun fvar => do
+          let bodyInst := body.instantiate1 fvar
+          CompilerM.withVarMapping fvar.fvarId! loopWire do
+            translateExprToWire bodyInst "loop_body"
         CompilerM.emitAssign loopWire (.ref resultWire)
         return some resultWire
       | _ => CompilerM.liftMetaM $ throwError "Signal.loop argument must be a lambda"
@@ -1641,5 +1677,84 @@ elab "#writeDesign" id:ident svPath:str cppPath:str wiresId:ident : command => d
     let wiresName ← Lean.resolveGlobalConstNoOverload wiresId
     let wiresArr ← evalStringArray wiresName
     writeDesignCore declName svPath.getString cppPath.getString (some wiresArr.toList)
+
+/-- Helper: elaborate a string as a Lean command -/
+private def elabSimStr (s : String) : CommandElabM Unit := do
+  match Parser.runParserCategory (← getEnv) `command s with
+  | .error err => throwError "#sim parse error:\n{err}\n\nSource:\n{s}"
+  | .ok stx => elabCommand stx
+
+/-- Names treated as clock/reset (excluded from SimInput) -/
+private def isSimClkRst (name : String) : Bool :=
+  ["clk", "clock", "CLK", "rst", "reset", "RST", "rst_n", "resetn", "RESETN"].any (· == name)
+  || name.endsWith "_clk" || name.endsWith "_rst"
+
+/-- Sanitize a name to valid Lean identifier -/
+private def simLeanIdent (s : String) : String :=
+  s.map fun c => if c.isAlphanum || c == '_' then c else '_'
+
+/-- #sim — Generate typed JIT simulator from a Signal DSL definition.
+
+    Usage:
+      def counter : Signal Domain (BitVec 8) := ...
+      #sim counter
+
+    Generates:
+      counter.Sim.SimInput, SimOutput, Simulator, load, jitCppPath
+-/
+elab "#sim" id:ident : command => do
+  let declName ← Lean.Elab.Command.liftCoreM do
+    Lean.resolveGlobalConstNoOverload id
+  -- Phase 1: Synthesize + generate JIT C++ (in TermElabM)
+  let (ns, jitPath, userInputs, outputs) ← Lean.Elab.Command.liftTermElabM do
+    let design ← synthesizeHierarchical declName
+    let optimized := Sparkle.IR.Optimize.optimizeDesign design
+    let jitCpp := Sparkle.Backend.CppSim.toCppSimJIT optimized
+    let ns := simLeanIdent (toString declName.components.getLast!)
+    let jitPath := s!".lake/build/gen/sim/{ns}_jit.cpp"
+    try
+      IO.FS.createDirAll ".lake/build/gen/sim"
+      IO.FS.writeFile jitPath jitCpp
+    catch _ => pure ()
+    let m ← match optimized.modules.head? with
+      | some m => pure m
+      | none => throwError "#sim: no module in design"
+    let userInputs := m.inputs.filter fun p => !isSimClkRst p.name
+    let outputs := m.outputs
+    pure (ns, jitPath, userInputs, outputs)
+  -- Phase 2: Generate typed wrappers (in CommandElabM)
+  let lb := "{"
+  let rb := "}"
+  elabSimStr s!"namespace {ns}.Sim"
+  elabSimStr "open Sparkle.Core.JIT"
+  elabSimStr s!"def jitCppPath : String := \"{jitPath}\""
+  if userInputs.isEmpty then
+    elabSimStr "structure SimInput where\n  deriving Repr, BEq, Inhabited"
+  else
+    let fields := String.intercalate "\n" <|
+      userInputs.map fun p => s!"  {simLeanIdent p.name} : BitVec {p.ty.bitWidth}"
+    elabSimStr s!"structure SimInput where\n{fields}\n  deriving Repr, BEq, Inhabited"
+  if outputs.isEmpty then
+    elabSimStr "structure SimOutput where\n  deriving Repr, BEq, Inhabited"
+  else
+    let fields := String.intercalate "\n" <|
+      outputs.map fun p => s!"  {simLeanIdent p.name} : BitVec {p.ty.bitWidth}"
+    elabSimStr s!"structure SimOutput where\n{fields}\n  deriving Repr, BEq, Inhabited"
+  elabSimStr "structure Simulator where\n  handle : JITHandle"
+  let inputsIdx := (List.range userInputs.length).zip userInputs
+  let setCalls := inputsIdx.map fun (idx, p) =>
+    s!"  JIT.setInput sim.handle {idx} i.{simLeanIdent p.name}.toNat.toUInt64"
+  let stepBody := String.intercalate "\n" setCalls
+  elabSimStr s!"def Simulator.step (sim : Simulator) (i : SimInput) : IO Unit := do\n{stepBody}\n  JIT.evalTick sim.handle"
+  let outputsIdx := (List.range outputs.length).zip outputs
+  let readLines := outputsIdx.map fun (idx, p) =>
+    s!"  let v{idx} ← JIT.getOutput sim.handle {idx}\n  let {simLeanIdent p.name} := BitVec.ofNat {p.ty.bitWidth} v{idx}.toNat"
+  let readBody := String.intercalate "\n" readLines
+  let readReturn := String.intercalate ", " <| outputs.map fun p => simLeanIdent p.name
+  elabSimStr s!"def Simulator.read (sim : Simulator) : IO SimOutput := do\n{readBody}\n  pure {lb} {readReturn} {rb}"
+  elabSimStr "def Simulator.reset (sim : Simulator) : IO Unit :=\n  JIT.reset sim.handle"
+  elabSimStr "def Simulator.destroy (sim : Simulator) : IO Unit :=\n  JIT.destroy sim.handle"
+  elabSimStr s!"def load : IO Simulator := do\n  let h ← JIT.compileAndLoad jitCppPath\n  pure {lb} handle := h {rb}"
+  elabSimStr s!"end {ns}.Sim"
 
 end Sparkle.Compiler.Elab
